@@ -28,10 +28,18 @@ function pager(info, nav, per, redraw) {
 }
 // dropdown filter ala Spark (btn-table-action)
 function filterDropdown(btn, menu, label, onPick) { menu.onclick = (e) => { const a = e.target.closest('[data-v]'); if (!a) return; e.preventDefault(); btn.innerHTML = `<i class="bi bi-funnel"></i> ${esc(a.textContent)}`; onPick(a.dataset.v); }; }
-async function api(path, method, body) {
+async function api(path, method, body, timeout = 30000) {
   const { data: { session } } = await sb.auth.getSession();
-  const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: body && JSON.stringify(body) });
-  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || 'Gagal'); return j;
+  if (!session) throw new Error('Sesi habis, silakan login ulang.');
+  const ac = new AbortController(), tm = setTimeout(() => ac.abort(), timeout);   // tanpa batas waktu, koneksi macet membuat layar "Memverifikasi..." menggantung selamanya
+  try {
+    const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: body && JSON.stringify(body), signal: ac.signal });
+    const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `Gagal (${r.status})`); return j;
+  } catch (e) {
+    if (e.name === 'AbortError') throw Object.assign(new Error('Koneksi lambat, server belum menjawab.'), { timeout: true });
+    if (e instanceof TypeError) throw Object.assign(new Error('Koneksi bermasalah. Periksa internet Anda lalu coba lagi.'), { net: true });
+    throw e;
+  } finally { clearTimeout(tm); }
 }
 const MENU = [['dashboard', 'bi-grid-fill', 'Dashboard'], ['absensi', 'bi-calendar-check-fill', 'Absensi'], ['karyawan', 'bi-people-fill', 'Karyawan'], ['keterangan', 'bi-file-earmark-medical', 'Keterangan'], ['setting', 'bi-gear-fill', 'Setting']];
 const BRAND = 'HADIRIN By RB';

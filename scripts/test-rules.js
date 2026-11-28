@@ -83,4 +83,36 @@ for (let i = 0; i < 2000; i++) {
   const d0 = Date.UTC(2026, 0, 4, 17, 0), r = () => d0 + Math.floor(Math.random() * 15 * 36e5), s0 = r(), now = s0 + Math.floor(Math.random() * 4 * 36e5), o = { s: new Date(s0).toISOString(), e: null };
   for (const sl of [undefined, CS, null]) assert.deepEqual(JSON.parse(JSON.stringify(ctx.HOURS.breakEnd(o, now, sl))), breakEnd(o, now, sl));
 }
+// ---- Kamera otomatis (khusus klien): HOURS.camWanted + HOURS.nextEdge ----
+const H = ctx.HOURS, cw = (a, t, sl) => H.camWanted(a, T(t), sl, 480, '08:00'), ne = (a, t, sl) => H.nextEdge(a, T(t), sl, 480, '08:00');
+assert.equal(cw(null, '07:00'), true);                                                    // belum absen: kamera terbuka
+assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '09:00'), false);                  // sedang bekerja, bukan jendela istirahat: tertutup
+assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '11:39'), false);
+assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '11:40'), true);                   // jendela keluar istirahat dibuka
+assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '12:19'), true);
+assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '12:20'), false);                  // BREAK_WIN 40 menit habis
+assert.equal(cw({ check_in: at('07:00'), breaks: [{ s: at('11:45'), e: null }] }, '12:39'), false);   // istirahat, scan masuk belum dibuka
+assert.equal(cw({ check_in: at('07:00'), breaks: [{ s: at('11:45'), e: null }] }, '12:40'), true);    // scan masuk dibuka
+assert.equal(cw({ check_in: at('07:00'), breaks: [B('11:45', '12:45')] }, '13:00'), false);           // sudah kembali, tutup lagi
+assert.equal(cw({ check_in: at('07:00'), breaks: [B('11:45', '12:45')] }, '14:40'), true);             // istirahat kedua
+const two = { check_in: at('07:00'), breaks: [B('11:45', '12:45'), B('14:45', '15:45')] };   // total istirahat 120 mnt -> boleh pulang 17:00
+assert.equal(cw(two, '16:59'), false); assert.equal(cw(two, '17:00'), true);              // sudah boleh pulang: kamera terbuka
+assert.equal(cw({ ...two, check_out: at('17:05') }, '17:10'), false);                      // sudah pulang: tertutup
+assert.equal(cw({ check_in: at('06:00'), breaks: [] }, '13:59'), false); assert.equal(cw({ check_in: at('06:00'), breaks: [] }, '14:00'), true);   // target (8j) tercapai tanpa istirahat: terbuka
+assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '11:40', CS), true); assert.equal(cw({ check_in: at('07:00'), breaks: [] }, '12:10', CS), false);   // jam custom 11:30: terbuka 11:30-12:09
+// nextEdge: waktu (ms) sampai keputusan kamera bisa berubah, supaya kamera buka/tutup TEPAT waktu
+const w0 = { check_in: at('07:00'), breaks: [] };
+assert.equal(ne(w0, '09:00'), 9600000);                                                    // 09:00 -> 11:40
+assert.equal(H.nextEdge(w0, T('11:40') + 30000, undefined, 480, '08:00'), 2370000);        // 11:40:30 -> 12:20 (akhir BREAK_WIN)
+assert.equal(ne({ check_in: at('07:00'), breaks: [{ s: at('11:45'), e: null }] }, '12:30'), 600000);   // 12:30 -> 12:40 (scan masuk dibuka)
+assert.equal(ne(two, '16:30'), 1800000);                                                   // 16:30 -> 17:00 (jam boleh pulang)
+assert.equal(ne({ ...two, check_out: at('17:05') }, '17:10'), null);                       // selesai: tidak ada lagi
+assert.equal(ne(null, '17:00'), null);
+// Setiap jadwal edge benar-benar mengubah keputusan kamera atau memang tidak ada perubahan: tidak pernah terlewat
+for (let i = 0; i < 3000; i++) {
+  const t0 = Date.UTC(2026, 0, 4, 22, 0) + Math.floor(Math.random() * 4 * 36e5), br = Math.random() < .5 ? [] : [{ s: new Date(t0 + 4.8 * 36e5).toISOString(), e: Math.random() < .5 ? null : new Date(t0 + 5.9 * 36e5).toISOString() }];
+  const x = { check_in: new Date(t0).toISOString(), breaks: br }, now = t0 + Math.floor(Math.random() * 10 * 36e5), before = H.camWanted(x, now, undefined, 480, '08:00'), ms = H.nextEdge(x, now, undefined, 480, '08:00');
+  // sampai SEBELUM edge pertama keputusan tidak boleh berubah
+  const eod = Math.floor((now + 7 * 36e5) / 864e5) * 864e5 + 864e5 - 7 * 36e5 - 1000, probe = Math.min(eod, ms == null ? Infinity : now + ms - 1000);   // sampai akhir hari WIB (ganti hari = app memuat ulang) for (const tt of [now + 1000, (now + probe) / 2, probe]) if (tt <= probe) assert.equal(H.camWanted(x, tt, undefined, 480, '08:00'), before, 'keputusan kamera berubah sebelum edge terjadwal');
+}
 console.log('Semua tes aturan jam kerja lulus.');

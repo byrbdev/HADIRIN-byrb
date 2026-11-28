@@ -53,5 +53,25 @@ const HOURS = (() => {
     const w = new Date(now + 7 * 3600e3), dayStart = Date.UTC(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate()) - 7 * 3600e3;
     return { at: dayStart + hm(S[k].due) * MIN, snapped: late > 0 };
   }
-  return { summarize, fmt, breakState, breakEnd, normSlots, BREAK_SLOTS };
+  // ---- Khusus klien (tidak ada di server): kapan kamera app boleh terbuka sendiri, dan kapan keputusan itu berubah ----
+  // Kamera otomatis: terbuka sebelum absen masuk, BREAK_WIN menit sejak scan keluar istirahat dibuka, saat scan masuk setelah istirahat dibuka,
+  // dan saat sudah boleh pulang. Selain itu ketuk 2x. Jam dari Setting (slots) dan tetap dicek ulang di server (api/scan.js).
+  const BREAK_WIN = 40;
+  function camWanted(a, now = Date.now(), slots = BREAK_SLOTS, target = 480, workStart = '08:00') {
+    if (!a) return true;
+    if (a.check_out) return false;
+    const m = summarize(a, now, target, workStart), g = breakState(a, now, slots);
+    if (m.onBreak) return g.canEnd;
+    if (m.canOut) return true;
+    return g.canStart && wibMin(now) - hm(normSlots(slots)[g.slot].out) < BREAK_WIN;
+  }
+  // Milidetik sampai keputusan kamera BISA berubah (jam jendela istirahat, akhir BREAK_WIN, jam boleh pulang). null = tidak ada lagi hari ini.
+  // Dipakai untuk menjadwalkan pengecekan tepat waktu, bukan menunggu polling 20 detik.
+  function nextEdge(a, now = Date.now(), slots = BREAK_SLOTS, target = 480, workStart = '08:00') {
+    const S = normSlots(slots), w = new Date(now + 7 * 3600e3), sec = w.getUTCHours() * 3600 + w.getUTCMinutes() * 60 + w.getUTCSeconds();
+    const cand = S.flatMap((x) => [hm(x.out) * 60, (hm(x.out) + BREAK_WIN) * 60, hm(x.back) * 60]).filter((t) => t > sec).map((t) => (t - sec) * 1000 - w.getUTCMilliseconds());
+    if (a && !a.check_out) { const m = summarize(a, now, target, workStart); if (!m.onBreak && !m.canOut && m.earliest > now) cand.push(m.earliest - now); }
+    return cand.length ? Math.min(...cand) : null;
+  }
+  return { summarize, fmt, breakState, breakEnd, normSlots, BREAK_SLOTS, BREAK_WIN, camWanted, nextEdge };
 })();

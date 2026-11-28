@@ -1,3 +1,3 @@
 { "name": "hadirin", "private": true, "type": "module",
-  "scripts": { "dev": "node dev-server.js", "seed": "node scripts/seed.js", "check": "node scripts/check.js", "seed:demo": "node scripts/seed-demo.js", "test:rules": "node scripts/test-rules.js" },
+  "scripts": { "dev": "node dev-server.js", "seed": "node scripts/seed.js", "check": "node scripts/check.js", "seed:demo": "node scripts/seed-demo.js", "test:rules": "node scripts/test-rules.js", "test:gps": "node scripts/test-gps.js", "test:scan": "node scripts/test-scan.js", "test": "node scripts/test-rules.js && node scripts/test-gps.js && node scripts/test-scan.js" },
   "dependencies": { "@supabase/supabase-js": "^2.45.4" } }

@@ -1,7 +1,7 @@
 // HADIRIN app karyawan. Memakai helper dari core.js ($, sb, api, toast, fmtTime, fmtDur, wibDate, esc)
-let me, att, ws = '08:00:00', target = 480, slots = null, mode = 'break', prevOut = false, stream, track, scanning = false, busy = false, manual = false, onHome = false, watch = null, ready = false, today = '', opening = false, camGen = 0, lastPos = null, entering = null, refreshing = null, retryT, lastMk = 0, lastBad = '', ym = wibDate().slice(0, 7), jenis = 'izin', dp;
+let me, att, ws = '08:00:00', target = 480, slots = null, mode = 'break', prevOut = false, stream, track, scanning = false, busy = false, manual = false, onHome = false, ready = false, today = '', opening = false, camGen = 0, lastPos = null, entering = null, refreshing = null, retryT, lastMk = 0, lastBad = '', ym = wibDate().slice(0, 7), jenis = 'izin', dp;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let office = null, fixes = [], denied = false, gpsT, gpsIdleT, gpsStart = 0, urgent = false;
+let office = null, urgent = false, boundT, manualT, loopGen = 0, blockUntilGone = false, goneAt = 0;
 const fd = (d) => new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 const calc = (r) => HOURS.summarize(r, Date.now(), target, ws), brk = (r) => HOURS.breakState(r, Date.now(), slots);
 const ST = { pending: ['pending', 'Menunggu'], approved: ['success', 'Disetujui'], rejected: ['failed', 'Ditolak'] };
@@ -35,12 +35,12 @@ function enter() {   // dijaga: splash + login tidak boleh menjalankan enter() d
 async function loadSettings() {   // dibaca tiap membuka halaman Scan, supaya perubahan dari Setting admin langsung berlaku
   const { data: s } = await sb.from('settings').select('*').eq('id', 1).single();
   if (s?.work_start) ws = s.work_start; if (s?.target_minutes) target = s.target_minutes; slots = s?.break_slots || null;
-  office = s?.office_lat != null && s?.office_lng != null ? { lat: s.office_lat, lng: s.office_lng, r: s.radius_m || 100 } : null; gpsChip();
+  office = s?.office_lat != null && s?.office_lng != null ? { lat: s.office_lat, lng: s.office_lng, r: s.radius_m || 100 } : null; chipRender();
 }
 // ---------- Home ----------
 async function loadToday() {   // gagal baca = kamera TETAP tertutup (dulu dianggap 'belum absen' sehingga kamera terbuka sendiri)
   const d = wibDate(), { data, error } = await sb.from('attendance').select('*').eq('user_id', me.id).eq('work_date', d).maybeSingle();
-  if (error) throw error; att = data; today = d; ready = true; renderStatus();
+  if (error) throw error; att = data; today = d; ready = true; renderStatus(); scheduleEdge();
 }
 function renderStatus() {
   $('#st-d').textContent = new Date(wibDate()).toLocaleDateString('id-ID', { dateStyle: 'full', timeZone: 'UTC' });
@@ -64,9 +64,9 @@ function enterHome() {
   onHome = true; manual = false; ready = false; stopCam();   // kamera tertutup sampai status absen hari ini benar-benar terbaca
   const h = new Date(Date.now() + 7 * 3600e3).getUTCHours();
   $('#gr').textContent = h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 18 ? 'Selamat sore' : 'Selamat malam'; $('#nm').textContent = me.full_name.split(' ')[0];
-  setIcon('bi-hourglass-split'); setIdle('Memuat status absen...'); startGps(); refresh();
+  setIcon('bi-hourglass-split'); setIdle('Memuat status absen...'); gps.start(); refresh();
 }
-function leaveHome() { onHome = false; clearTimeout(retryT); stopCam(); clearInterval(gpsT); clearTimeout(gpsIdleT); gpsIdleT = setTimeout(stopGps, 60000); }   // GPS dibiarkan hangat 60 dtk setelah pindah tab, supaya kembali ke Scan langsung siap
+function leaveHome() { onHome = false; clearTimeout(retryT); clearTimeout(boundT); stopCam(); gps.stopLater(60000); }   // GPS dibiarkan hangat 60 dtk setelah pindah tab, supaya kembali ke Scan langsung siap
 // Baca ulang setting + absensi hari ini, baru kamera boleh diputuskan buka/tutup (satu proses sekaligus)
 function refresh() {
   return refreshing || (refreshing = (async () => {
@@ -76,87 +76,67 @@ function refresh() {
   })().finally(() => (refreshing = null)));
 }
 const setChip = (ok, t, out) => { $('#chip').className = 'chip' + (ok ? ' ok' : out ? ' out' : ''); $('#chip span').textContent = t; };
-// GPS cepat: (1) titik cepat dari jaringan/cache langsung saat mulai, (2) GPS akurat jalan paralel dan terus menyempurnakan,
-// (3) pemantauan tidak dimatikan tiap pindah tab, (4) status memakai lingkaran ketidakpastian: jelas di luar/di dalam langsung ditampilkan walau GPS masih kasar
-const FIX_TTL = 20000, ACC_SCAN = 150;
-const distM = (a, b, c, d) => { const r = (x) => (x * Math.PI) / 180, h = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2; return 2 * 6371000 * Math.asin(Math.sqrt(h)); };
-const score = (f, n) => f.c.accuracy + ((n - f.t) / 1000) * 2;   // fix lebih akurat menang, tapi tiap detik umurnya dihitung 2 m (pengguna bisa bergerak)
-const bestFix = () => { const n = Date.now(); fixes = fixes.filter((f) => n - f.t < FIX_TTL); return fixes.reduce((b, f) => (!b || score(f, n) < score(b, n) ? f : b), null); };
-const addFix = (p) => { denied = false; fixes.push({ c: p.coords, t: Math.min(Date.now(), p.timestamp || Date.now()) }); gpsChip(); };
-const gpsErr = (e) => { if (e.code === 1) { denied = true; setChip(false, 'Aktifkan izin lokasi'); } };
-function gpsChip() {
-  if (denied || !onHome) return;
-  const f = bestFix(); if (!f) return setChip(false, Date.now() - gpsStart > 10000 ? 'GPS belum terbaca. Pindah ke area terbuka / aktifkan GPS' : 'Mencari lokasi...');
-  const a = f.c.accuracy; if (!office) return setChip(true, 'Lokasi terbaca');
-  const d = Math.round(distM(office.lat, office.lng, f.c.latitude, f.c.longitude)), r = office.r;   // rumus sama dengan server (api/scan.js)
-  const out = () => setChip(false, `Di luar area kantor: ${d} m (maks ${r} m)`, true);
-  if (d - a > r) return out();                                   // pasti di luar, bahkan di batas kemungkinan terbaik
-  if (a <= 50) return d <= r ? setChip(true, 'Di area kantor') : out();
-  if (d + a <= r) return setChip(true, 'Di area kantor');       // pasti di dalam
-  if (a <= 100) return d <= r ? setChip(true, 'Di area kantor (GPS kurang presisi)') : out();
-  setChip(false, 'Mengakurasi lokasi...');
-}
-function stopGps() { clearInterval(gpsT); clearTimeout(gpsIdleT); if (watch != null) { navigator.geolocation.clearWatch(watch); watch = null; } }
-function startGps() {
-  if (!navigator.geolocation) return setChip(false, 'GPS tidak didukung');
-  clearTimeout(gpsIdleT); clearInterval(gpsT); gpsT = setInterval(gpsChip, 2000);
-  if (watch != null) return gpsChip();   // masih hangat dari sebelumnya: langsung tampilkan hasil terakhir
-  fixes = []; denied = false; gpsStart = Date.now(); setChip(false, 'Mencari lokasi...');
-  navigator.geolocation.getCurrentPosition(addFix, gpsErr, { enableHighAccuracy: false, maximumAge: 30000, timeout: 8000 });   // titik cepat (jaringan/cache)
-  watch = navigator.geolocation.watchPosition(addFix, gpsErr, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });   // GPS akurat paralel
-}
-const getPos = async () => {   // saat scan: pakai titik terbaik; tunggu paling lama 5 dtk bila belum ada yang cukup akurat
-  const t0 = Date.now(); let f = bestFix();
-  while ((!f || f.c.accuracy > ACC_SCAN) && watch != null && Date.now() - t0 < 5000) { await sleep(300); f = bestFix(); }
-  if (f) return f.c;
-  return new Promise((ok, no) => navigator.geolocation.getCurrentPosition((p) => ok(p.coords), () => no(new Error('Lokasi tidak terbaca. Aktifkan GPS dan izinkan akses lokasi.')), { enableHighAccuracy: true, timeout: 12000, maximumAge: 10000 }));
-};
-// Kamera otomatis: tutup setelah absen masuk; buka tepat saat jam keluar istirahat dibuka selama BREAK_WIN menit
-// (lewat itu tetap bisa lewat ketuk 2x). Saat istirahat, kamera baru dibuka ketika scan masuk dibuka.
-// Jam diatur admin di halaman Setting (settings.break_slots; bawaan HOURS.BREAK_SLOTS) dan dicek ulang di server (api/scan.js).
-const BREAK_WIN = 40;
-const hm = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
-const wibMin = () => { const d = new Date(Date.now() + 7 * 3600e3); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
-function camWanted() {
-  if (!att) return true;
-  if (att.check_out) return false;
-  const m = calc(att), g = brk(att); if (m.onBreak) return g.canEnd; if (m.canOut) return true;
-  return g.canStart && wibMin() - hm(HOURS.normSlots(slots)[g.slot].out) < BREAK_WIN;
+// GPS: mesin ada di assets/js/gps.js (dua pemantau paralel, watchdog, pemulihan otomatis, umur titik dari waktu tiba). Di sini hanya menggambar status.
+const gps = GPS.create({ geo: navigator.geolocation, perm: navigator.permissions });
+function chipRender(st) { if (!onHome) return; const e = GPS.evaluate({ ...(st || gps.state()), office }); setChip(e.ok, e.text, e.out); }
+gps.on(chipRender);
+$('#chip').addEventListener('pointerup', (e) => { e.stopPropagation(); if (!$('#chip').classList.contains('ok')) { gps.restart(); chipRender(); } });   // ketuk chip = ulangi pencarian lokasi (bukan buka kamera)
+const getPos = () => gps.getFix();   // saat scan: titik terbaik; tunggu paling lama 5 dtk bila belum cukup akurat, lalu tembak langsung bila belum ada
+// Kamera otomatis: aturan ada di HOURS.camWanted (assets/js/hours.js, dites di npm run test:rules). Pengecekan dijadwalkan TEPAT saat
+// jendela istirahat / jam boleh pulang berubah (HOURS.nextEdge), ditambah cadangan tiap 20 dtk. Jam diatur admin di Setting dan dicek ulang di server.
+const camWanted = () => HOURS.camWanted(att, Date.now(), slots, target, ws);
+function scheduleEdge() {
+  clearTimeout(boundT); if (!onHome || !ready || document.hidden) return;
+  const ms = HOURS.nextEdge(att, Date.now(), slots, target, ws); if (ms == null) return;
+  boundT = setTimeout(() => { if (ready) renderStatus(); syncCam(); }, Math.min(Math.max(ms + 400, 500), 6 * 3600e3));
 }
 // Isi tengah area scan; keterangan (p) disembunyikan bila kosong supaya tetap center
 function setIdle(title, sub) { $('#cam-t').textContent = title; const p = $('#cam-p'); p.textContent = sub || ''; p.classList.toggle('d-none', !sub); }
 const setIcon = (c) => { $('.pulse i').className = 'bi ' + c; };
 function showIdle() {
+  if (att?.check_out) { setIcon('bi-check2-circle'); return setIdle('Absensi Hari Ini Selesai', 'Terima kasih, sampai jumpa besok!'); }
   const g = att && brk(att);
   if (g?.onBreak) { setIcon('bi-cup-hot-fill'); setIdle('Selamat Istirahat', g.canEnd ? '' : `Scan masuk dibuka pukul ${g.backAt}`); }
-  else { setIcon('bi-briefcase-fill'); setIdle('Selamat bekerja!'); }
+  else { setIcon('bi-briefcase-fill'); setIdle('Selamat bekerja!', g?.canStart ? 'Ketuk 2x layar ini untuk scan istirahat' : g?.nextAt ? `Scan istirahat dibuka pukul ${g.nextAt}` : ''); }
 }
 function syncCam() {
   if (!onHome || document.hidden || busy) return;
   if (ready && today !== wibDate()) return void refresh();   // ganti hari saat aplikasi terbuka terus
   if (!ready || att?.check_out) return;
-  if (camWanted()) { if (!stream) startCam(); } else if (stream && !manual) { stopCam(); showIdle(); }
+  if (camWanted()) { if (!stream && !opening) startCam(); }
+  else if (stream && !manual) { stopCam(); showIdle(); }
+  else if (!stream && !opening && !manual) showIdle();   // teks "dibuka pukul ..." ikut jam terbaru
+  scheduleEdge();
 }
 setInterval(syncCam, 20000);
 async function startCam() {
   if (!onHome || !ready || document.hidden) return;
-  if (att?.check_out) { stopCam(); setIcon('bi-check2-circle'); return setIdle('Absensi Hari Ini Selesai', 'Terima kasih, sampai jumpa besok!'); }
+  if (att?.check_out) { stopCam(); return showIdle(); }
   if (!manual && att && !camWanted()) { stopCam(); return showIdle(); }
   setIcon('bi-qr-code-scan');
   if (stream || opening) return;   // cegah dua kamera terbuka bersamaan (stream bocor = kamera menyala terus)
   const gen = ++camGen; opening = true; setIdle('Silakan Scan QR untuk Kehadiran', 'Menyiapkan kamera...');
   try {
-    const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    let st; try { st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }); }
+    catch (e) { if (e?.name === 'OverconstrainedError' || e?.name === 'TypeError') st = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); else throw e; }   // HP yang menolak batasan resolusi / kamera belakang
     if (gen !== camGen) return st.getTracks().forEach((t) => t.stop());   // dibatalkan saat menunggu izin / kamera
     stream = st; const v = $('#vid'); v.srcObject = st; await v.play();
     if (gen !== camGen) return;
-    scanning = true; $('#scan').classList.add('live'); track = st.getVideoTracks()[0];
-    if (track.getCapabilities?.().torch) $('#torch').classList.add('can'); loop();
-  } catch { if (gen === camGen) { stopCam(); setIdle('Kamera belum aktif', 'Izinkan akses kamera di browser, lalu ketuk 2x layar ini.'); } }
-  finally { if (gen === camGen) opening = false; }
+    track = st.getVideoTracks()[0]; track.onended = () => { if (gen === camGen) { stopCam(); setIdle('Kamera terhenti', 'Ketuk 2x layar ini untuk membuka lagi.'); } };   // kamera direbut aplikasi lain / dicabut
+    try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch {}   // fokus otomatis terus (QR cepat terbaca)
+    scanning = true; $('#scan').classList.add('live');
+    if (track.getCapabilities?.().torch) $('#torch').classList.add('can');
+    clearTimeout(manualT); if (manual) manualT = setTimeout(() => { if (manual && !busy) { manual = false; syncCam(); } }, 90000);   // kamera manual tidak dibiarkan menyala selamanya (baterai)
+    loop();
+  } catch (e) {
+    if (gen === camGen) { stopCam(); const n = e?.name; setIdle('Kamera belum aktif', !navigator.mediaDevices ? 'Buka HADIRIN lewat alamat https:// agar kamera bisa dipakai.' :
+      n === 'NotAllowedError' || n === 'SecurityError' ? 'Izinkan akses kamera di browser, lalu ketuk 2x layar ini.' : n === 'NotFoundError' ? 'Kamera tidak ditemukan di perangkat ini.' : n === 'NotReadableError' ? 'Kamera sedang dipakai aplikasi lain. Tutup aplikasi itu, lalu ketuk 2x layar ini.' : 'Kamera gagal dibuka. Ketuk 2x layar ini untuk mencoba lagi.'); }
+  } finally { if (gen === camGen) opening = false; }
 }
 function stopCam() {
-  camGen++; opening = false; scanning = false; stream?.getTracks().forEach((t) => t.stop()); stream = track = null;
+  camGen++; loopGen++; opening = false; scanning = false; clearTimeout(manualT);
+  if (track) track.onended = null;
+  stream?.getTracks().forEach((t) => t.stop()); stream = track = null;
   const v = $('#vid'); v.srcObject = null; $('#scan').classList.remove('live'); $('#torch').classList.remove('can', 'on');
 }
 // Pemindai: BarcodeDetector bawaan browser (cepat, hemat baterai) bila ada; jsQR sebagai cadangan
@@ -168,28 +148,52 @@ async function readQR(v) {
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }   // jangan ubah ukuran tiap frame (mereset canvas)
   cx.drawImage(v, 0, 0, w, h); return jsQR(cx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' })?.data || '';
 }
-async function loop() {
-  if (!scanning) return; const v = $('#vid');
+async function loop(g = ++loopGen) {   // g: tiap pembukaan kamera punya rantai loop sendiri; rantai lama mati sendiri (dulu bisa dobel = scan terkirim 2x)
+  if (!scanning || g !== loopGen) return; const v = $('#vid');
   if (v.readyState >= 2 && v.videoWidth && !busy && !document.hidden) {
     const d = await readQR(v).catch(() => '');
-    if (!scanning) return;
-    if (d.startsWith('HDR.')) onCode(d); else if (d && d !== lastBad) { lastBad = d; toast('QR bukan milik HADIRIN', false); setTimeout(() => (lastBad = ''), 3000); }
+    if (!scanning || g !== loopGen) return;
+    if (!busy) {
+      if (!d) { if (blockUntilGone) { goneAt = goneAt || Date.now(); if (Date.now() - goneAt > 1000) blockUntilGone = false; } }   // QR sudah menjauh dari kamera: boleh scan lagi
+      else { goneAt = 0;
+        if (blockUntilGone) { /* scan terakhir gagal: QR yang sama diabaikan sampai dijauhkan dulu (tidak mengulang error terus-menerus) */ }
+        else if (d.startsWith('HDR.')) onCode(d);
+        else if (d !== lastBad) { lastBad = d; toast('QR bukan milik HADIRIN', false); setTimeout(() => (lastBad = ''), 3000); } }
+    }
   }
-  setTimeout(loop, BD ? 120 : 170);
+  setTimeout(() => loop(g), BD ? 120 : 170);
 }
 const ICON = { ok: '<svg class="ck ok" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/><path d="M30 52l14 14 27-30"/></svg>', bad: '<svg class="ck bad" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/><path d="M35 35l30 30M65 35L35 65"/></svg>', load: '<div class="spin"></div>',
   rest: '<div class="ov-ic rest"><i class="bi bi-cup-hot-fill"></i></div>', work: '<div class="ov-ic work"><i class="bi bi-briefcase-fill"></i></div>' };
 let resTimer;
 function result(k, t, p) { clearTimeout(resTimer); $('#res-i').innerHTML = ICON[k]; $('#res-t').textContent = t || 'Memverifikasi...'; $('#res-p').textContent = p || 'Mengecek QR dan lokasi Anda'; $('#res-ok').classList.toggle('d-none', k === 'load'); $('#res').classList.add('on'); }
+// Perbarui status lokal dari jawaban server: tampilan langsung benar walau pembacaan ulang lambat / gagal (dulu scan yang SUDAH tercatat bisa tampil "Absen Gagal")
+function applyScan(r) {
+  const t = r.time;
+  if (r.action === 'in') att = { ...(att || {}), check_in: t, check_out: null, breaks: [] };
+  else if (!att) return;
+  else if (r.action === 'break_start') att = { ...att, breaks: [...(att.breaks || []), { s: t, e: null }] };
+  else if (r.action === 'break_end') att = { ...att, breaks: (att.breaks || []).map((b) => (b.e ? b : { ...b, e: t })) };
+  else if (r.action === 'out') att = { ...att, check_out: t };
+  ready = true; today = wibDate(); renderStatus();
+}
+const reconcile = (n = 0) => loadToday().then(() => syncCam()).catch(() => { if (n < 3 && onHome) setTimeout(() => reconcile(n + 1), 1500 * (n + 1)); });   // samakan dengan server di latar belakang
 async function onCode(token) {
-  busy = true; navigator.vibrate?.(60); result('load');
+  if (busy) return; busy = true; navigator.vibrate?.(60); result('load', 'Mengambil lokasi...', 'Pastikan GPS aktif');
   try {
-    const p = await getPos(); const r = await api('/api/scan', 'POST', { token, lat: p.latitude, lng: p.longitude, action: mode }); navigator.vibrate?.([80, 40, 80]); mode = 'break'; manual = false; await loadToday(); if (!camWanted()) { stopCam(); showIdle(); }
+    if (navigator.onLine === false) throw new Error('Tidak ada koneksi internet. Sambungkan lalu scan lagi.');
+    const p = await getPos(); result('load');
+    const r = await api('/api/scan', 'POST', { token, lat: p.latitude, lng: p.longitude, action: mode }, 20000);
+    navigator.vibrate?.([80, 40, 80]); mode = 'break'; manual = false; applyScan(r); if (!camWanted()) { stopCam(); showIdle(); }
     const T = { in: ['Absen Masuk Berhasil', `Pukul ${fmtTime(r.time)} • ${r.distance} m dari kantor`], break_start: ['Selamat Istirahat', `Keluar pukul ${fmtTime(r.time)}` + (r.back_at ? ` • Scan masuk dibuka pukul ${r.back_at}` : ' • Scan lagi saat kembali')],
       break_end: ['Selamat bekerja!', `Kembali pukul ${fmtTime(r.time)} • Istirahat ${r.break_min} menit` + (r.snapped ? ` • Scan ${fmtTime(r.real_time)}, dicatat tepat waktu` : '')], out: ['Absen Pulang Berhasil', `Pukul ${fmtTime(r.time)} • Kerja bersih ${HOURS.fmt(r.netMin)} • Istirahat ${r.breakMin} menit`] }[r.action];
     const k = { break_start: 'rest', break_end: 'work' }[r.action] || 'ok'; result(k, T[0], T[1]);
     if (k !== 'ok') resTimer = setTimeout(() => $('#res-ok').click(), 3500);   // overlay istirahat / bekerja menutup sendiri
-  } catch (e) { result('bad', 'Absen Gagal', e.message); }
+    reconcile();
+  } catch (e) {
+    blockUntilGone = true; goneAt = 0;
+    result('bad', 'Absen Gagal', e.message + (e.timeout ? ' Status absen dicek ulang, lihat dulu sebelum scan lagi.' : '')); reconcile();   // status dibaca ulang: bila scan ternyata sudah tercatat di server, tampilan ikut benar
+  }
 }
 $('#res-ok').onclick = () => { clearTimeout(resTimer); $('#res').classList.remove('on'); busy = false; manual = false; if (att?.check_out) startCam(); else syncCam(); };
 // Ketuk 2x pada area scan = buka kamera manual (kondisi urgent)
@@ -254,10 +258,11 @@ $('#fl').onsubmit = async (e) => { e.preventDefault(); $('#err').textContent = '
 document.querySelectorAll('[data-v]').forEach((b) => (b.onclick = () => show(b.dataset.v)));
 document.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => show(b.dataset.go)));
 // Layar mati / pindah aplikasi: kamera pasti mati. Saat kembali, status dibaca ulang dari server dulu (bukan langsung membuka kamera)
-document.addEventListener('visibilitychange', () => { if (document.hidden) { stopCam(); manual = false; stopGps(); } else if (onHome) { startGps(); refresh(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { stopCam(); manual = false; clearTimeout(boundT); gps.stop(); } else if (onHome) { gps.start(); refresh(); } });
 addEventListener('pagehide', () => stopCam());
 addEventListener('online', () => { if (!me && hasSaved()) enter(); });
-addEventListener('pageshow', (e) => { if (e.persisted && onHome) { stopCam(); ready = false; refresh(); } });
+addEventListener('pageshow', (e) => { if (e.persisted && onHome) { stopCam(); ready = false; gps.start(); refresh(); } });
+addEventListener('online', () => { if (onHome && !ready) refresh(); });
 setInterval(() => { $('#clk').textContent = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Jakarta' }).replace(/\./g, ':'); const mk = Math.floor(Date.now() / 6e4); if (mk !== lastMk) { lastMk = mk; if (ready && att && !att.check_out && onHome) renderStatus(); } }, 1000);   // status hanya digambar ulang tiap menit (dulu tiap detik)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 (async () => {   // di APK: splash dipegang native (HadirinStore) sampai tampilan siap; di browser/PWA: splash web minimal 1,6 dtk

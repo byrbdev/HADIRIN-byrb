@@ -5,7 +5,20 @@ Pages.setting = () => {
     const { data: s } = await sb.from('settings').select('*').eq('id', 1).single(); if (!s || !$('#lat')) return;
     $('#lat').value = s.office_lat; $('#lng').value = s.office_lng; $('#rad').value = s.radius_m; $('#tm').value = s.target_minutes || 480; setBrk(s.break_slots);
   })();
-  $('#loc').onclick = () => navigator.geolocation.getCurrentPosition((p) => { $('#lat').value = p.coords.latitude.toFixed(6); $('#lng').value = p.coords.longitude.toFixed(6); }, () => toast('Izin lokasi ditolak', false));
+  // Titik kantor menentukan semua absen: ambil beberapa titik GPS akurat selama maks 12 dtk dan pakai yang paling akurat (dulu: satu titik pertama, bisa meleset ratusan meter)
+  $('#loc').onclick = () => {
+    const btn = $('#loc'), geo = navigator.geolocation; if (!geo) return toast('Browser tidak mendukung GPS', false);
+    const html = btn.innerHTML; let best = null, id, t, fin = false; btn.disabled = true; btn.textContent = 'Mengambil lokasi...';
+    const done = (denied) => {
+      if (fin) return; fin = true; geo.clearWatch(id); clearTimeout(t); btn.disabled = false; btn.innerHTML = html;
+      if (denied) return toast('Izin lokasi ditolak. Izinkan akses lokasi di pengaturan browser', false);
+      if (!best) return toast('Lokasi belum terbaca. Aktifkan GPS lalu coba lagi di area terbuka', false);
+      $('#lat').value = best.latitude.toFixed(6); $('#lng').value = best.longitude.toFixed(6);
+      toast(`Lokasi terisi (akurasi ±${Math.round(best.accuracy)} m)` + (best.accuracy > 50 ? '. Kurang presisi, coba lagi di area terbuka' : ''), best.accuracy <= 50);
+    };
+    id = geo.watchPosition((p) => { if (!best || p.coords.accuracy < best.accuracy) best = p.coords; if (best.accuracy <= 15) done(); }, (e) => { if (e.code === 1) done(true); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    t = setTimeout(() => done(), 12000);
+  };
   $('#f1').onsubmit = async (e) => {
     e.preventDefault(); const { error } = await sb.from('settings').update({ office_lat: +$('#lat').value, office_lng: +$('#lng').value, radius_m: +$('#rad').value, target_minutes: +$('#tm').value }).eq('id', 1);
     error ? toast(error.message, false) : toast('Setting tersimpan');

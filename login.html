@@ -6,7 +6,7 @@
 <form id="f"><div class="login-form-group"><label class="login-form-label">Username / Email</label><div class="login-input-group"><i class="bi bi-envelope input-icon"></i><input type="text" id="email" class="login-input" autocapitalize="none" autocomplete="username" required></div></div>
 <div class="login-form-group"><label class="login-form-label">Password</label><div class="login-input-group"><i class="bi bi-shield-lock input-icon"></i><input type="password" id="pw" class="login-input" required></div></div>
 <div id="err" class="text-danger small mb-2"></div><button class="btn-login" type="submit"><span>Masuk</span><i class="bi bi-arrow-right"></i></button></form></div></div>
-<script src="/assets/libs/bootstrap/js/bootstrap.bundle.min.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script><script src="/config.js"></script><script src="/assets/js/core.js"></script>
+<script src="/assets/libs/bootstrap/js/bootstrap.bundle.min.js"></script><script src="/assets/libs/supabase/supabase.js"></script><script src="/config.js"></script><script src="/assets/js/core.js"></script>
 <script>
 (async()=>{const{data:{session}}=await sb.auth.getSession();if(!session)return document.documentElement.classList.remove('boot');
 const{data:p,error:pe}=await sb.from('profiles').select('role,active').eq('id',session.user.id).single();
