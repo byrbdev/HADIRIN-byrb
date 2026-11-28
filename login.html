@@ -4,7 +4,7 @@
 <div class="login-wrapper"><div class="login-bg-shape login-bg-shape-1"></div><div class="login-bg-shape login-bg-shape-2"></div>
 <div class="login-card"><div class="login-brand"><i class="bi bi-person-check-fill"></i><span>HADIRIN <small class="brand-by">By RB</small></span></div><p class="login-subtitle">Masuk ke dashboard admin</p>
 <form id="f"><div class="login-form-group"><label class="login-form-label">Username / Email</label><div class="login-input-group"><i class="bi bi-envelope input-icon"></i><input type="text" id="email" class="login-input" autocapitalize="none" autocomplete="username" required></div></div>
-<div class="login-form-group"><label class="login-form-label">Password</label><div class="login-input-group"><i class="bi bi-shield-lock input-icon"></i><input type="password" id="pw" class="login-input" required></div></div>
+<div class="login-form-group"><label class="login-form-label">Password</label><div class="login-input-group"><i class="bi bi-shield-lock input-icon"></i><input type="password" id="pw" class="login-input login-input-password" autocomplete="current-password" required><button type="button" class="password-toggle-btn" id="eye" aria-label="Tampilkan password" aria-pressed="false"><i class="bi bi-eye"></i></button></div></div>
 <div id="err" class="text-danger small mb-2"></div><button class="btn-login" type="submit"><span>Masuk</span><i class="bi bi-arrow-right"></i></button></form></div></div>
 <script src="/assets/libs/bootstrap/js/bootstrap.bundle.min.js"></script><script src="/assets/libs/supabase/supabase.js"></script><script src="/config.js"></script><script src="/assets/js/core.js"></script>
 <script>
@@ -13,6 +13,7 @@ const{data:p,error:pe}=await sb.from('profiles').select('role,active').eq('id',s
 if(p&&p.active)return location.replace(p.role==='admin'?'/dashboard':'/app');if(pe&&pe.code!=='PGRST116')return document.documentElement.classList.remove('boot');await sb.auth.signOut();document.documentElement.classList.remove('boot');})().catch(()=>document.documentElement.classList.remove('boot'));
 if(CFG.dev){$('#email').value=CFG.dev.email||'';$('#pw').value=CFG.dev.password||'';$('#err').insertAdjacentHTML('beforebegin','<div class="small text-muted mb-2">Mode dev: kredensial default terisi otomatis.</div>');}
 {const q=new URLSearchParams(location.search).get('e');if(q)$('#err').textContent=q;}
+$('#eye').onclick=()=>{const p=$('#pw'),s=p.type==='password';p.type=s?'text':'password';$('#eye i').className=s?'bi bi-eye-slash':'bi bi-eye';$('#eye').setAttribute('aria-pressed',s);$('#eye').setAttribute('aria-label',s?'Sembunyikan password':'Tampilkan password');p.focus();};
 $('#f').onsubmit=async e=>{e.preventDefault();const{error}=await sb.auth.signInWithPassword({email:($('#email').value.trim().includes('@')?$('#email').value.trim():$('#email').value.trim().toLowerCase()+'@byrb.vercel.app'),password:$('#pw').value});
 if(error)return $('#err').textContent='Username/email atau password salah';
 const{data:p,error:pe}=await sb.from('profiles').select('role,active').eq('id',(await sb.auth.getUser()).data.user.id).single();
